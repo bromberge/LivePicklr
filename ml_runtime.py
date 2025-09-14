@@ -1,5 +1,4 @@
 # ml_runtime.py
-
 from __future__ import annotations
 
 import math
@@ -10,12 +9,8 @@ import pandas as pd
 import xgboost as xgb
 from sqlmodel import Session, select
 
+import settings as S
 from models import Candle
-from settings import (
-    USE_MODEL, MODEL_PATH,
-    DET_EMA_SHORT, DET_EMA_LONG,
-    BREAKOUT_LOOKBACK, EMA_SLOPE_LOOKBACK,
-)
 
 # The exact feature order the model was trained with (from your training logs)
 FEATURE_ORDER: List[str] = [
@@ -60,12 +55,12 @@ def _to_hourly(df: pd.DataFrame) -> pd.DataFrame:
         "close": "last",
         "volume": "sum",
     }
-    # Use 'h' (lowercase) to avoid the FutureWarning
+    # Use lowercase 'h' to avoid FutureWarning
     hourly = df.resample("h").agg(agg).dropna().reset_index()
     return hourly
 
 
-def _atr_pct(hourly: pd.DataFrame, n: int = 14) -> float:
+def _atr_pct(hourly: pd.DataFrame, n: int) -> float:
     """
     Simple ATR% over last n hourly bars: ATR / last_close.
     """
@@ -95,7 +90,7 @@ def _build_now_features_from_hourly(hourly: pd.DataFrame) -> Optional[Dict[str, 
     Returns dict or None if not enough data.
     """
     # Need enough history for EMA26, slope lookback, and 24h return.
-    need = max(DET_EMA_LONG + EMA_SLOPE_LOOKBACK + 2, 30)
+    need = max(S.DET_EMA_LONG + S.EMA_SLOPE_LOOKBACK + 2, 30)
     if len(hourly) < need:
         return None
 
@@ -118,21 +113,24 @@ def _build_now_features_from_hourly(hourly: pd.DataFrame) -> Optional[Dict[str, 
     ret_24h = _ret(24)
 
     # EMAs and spread
-    ema_short = _ema(close, DET_EMA_SHORT)
-    ema_long = _ema(close, DET_EMA_LONG)
+    ema_short = _ema(close, S.DET_EMA_SHORT)
+    ema_long = _ema(close, S.DET_EMA_LONG)
     ema_spread = (float(ema_short[-1]) - float(ema_long[-1])) / last
 
     # EMA26 slope over lookback
-    back = EMA_SLOPE_LOOKBACK
+    back = S.EMA_SLOPE_LOOKBACK
     ema26_slope = float(ema_long[-1]) - float(ema_long[-(back + 1)])
 
     # Breakout% over recent highs (exclude the current bar)
-    lb = max(2, BREAKOUT_LOOKBACK)
-    past_hi = float(np.max(high[-(lb + 1):-1])) if len(high) >= (lb + 1) else float(np.max(high[:-1]))
+    lb = max(2, S.BREAKOUT_LOOKBACK)
+    if len(high) >= (lb + 1):
+        past_hi = float(np.max(high[-(lb + 1):-1]))
+    else:
+        past_hi = float(np.max(high[:-1])) if len(high) > 1 else last
     breakout_pct = ((last - past_hi) / past_hi) if past_hi > 0 else 0.0
 
-    # ATR%
-    atr_pct = _atr_pct(hourly, n=14)
+    # ATR% using configured ATR length
+    atr_pct = _atr_pct(hourly, n=S.ATR_LEN)
 
     # Last hour volume (same aggregation as training)
     vol_last = float(volume[-1]) if len(volume) else 0.0
@@ -153,17 +151,17 @@ def _build_now_features_from_hourly(hourly: pd.DataFrame) -> Optional[Dict[str, 
 def load_model() -> Optional[xgb.Booster]:
     """Load the XGBoost model once. Returns None if disabled or missing."""
     global _MODEL
-    if not USE_MODEL:
+    if not S.USE_MODEL:
         return None
     if _MODEL is not None:
         return _MODEL
     try:
         bst = xgb.Booster()
-        bst.load_model(MODEL_PATH)
+        bst.load_model(S.MODEL_PATH)
         _MODEL = bst
-        print(f"[model] Loaded: {MODEL_PATH}")
+        print(f"[model] Loaded: {S.MODEL_PATH}")
     except Exception as e:
-        print(f"[model] Could not load model at {MODEL_PATH}: {e}")
+        print(f"[model] Could not load model at {S.MODEL_PATH}: {e}")
         _MODEL = None
     return _MODEL
 
@@ -190,7 +188,7 @@ def model_predict_for_symbol(session: Session, symbol: str) -> Optional[float]:
     Build features NOW for `symbol` from DB candles (hourly aggregation),
     and return model probability in [0,1]. Returns None if disabled/unavailable.
     """
-    if not USE_MODEL:
+    if not S.USE_MODEL:
         return None
 
     bst = load_model()
@@ -216,15 +214,16 @@ def model_predict_for_symbol(session: Session, symbol: str) -> Optional[float]:
     except Exception as e:
         print(f"[model] predict error for {symbol}: {e}")
         return None
-        
-from typing import Optional
-from sqlmodel import Session
 
-def hourly_atr_from_db(session: Session, symbol: str, n: int = 14) -> float:
+
+def hourly_atr_from_db(session: Session, symbol: str, n: int = None) -> float:
     """
     Return ATR (absolute, not %) computed on hourly bars over the last n periods.
     If there isn't enough data, returns 0.0.
     """
+    if n is None:
+        n = S.ATR_LEN
+
     raw = _fetch_candles(session, symbol)
     hourly = _to_hourly(raw)
     if len(hourly) < n + 1:

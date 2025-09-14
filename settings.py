@@ -1,153 +1,293 @@
 # settings.py
-from dotenv import load_dotenv
-load_dotenv(override=True)  # read .env into environment
+# Unified config + comprehensive legacy aliases so older modules keep working.
+# All knobs come from .env; change behavior by editing .env only.
+try:
+    from dotenv import load_dotenv, find_dotenv
+    _DOTENV_PATH = find_dotenv(usecwd=True)
+    if _DOTENV_PATH:
+        load_dotenv(_DOTENV_PATH, override=False)
+        print(f"[settings] .env loaded: {_DOTENV_PATH}")
+    else:
+        print("[settings] no .env found via find_dotenv()")
+except Exception as _e:
+    print(f"[settings] dotenv load skipped: {_e}")
 
 import os
+from typing import List, Optional
 
-def env(name, cast=str, default=None):
-    v = os.getenv(name, default)
-    return cast(v) if v is not None else v
+def _get(name: str) -> Optional[str]:
+    # Prefer UPPER, but accept lower; strip whitespace; treat "" as None
+    v = os.getenv(name)
+    if v is None:
+        v = os.getenv(name.lower())
+    if v is None:
+        return None
+    v2 = str(v).strip()
+    return v2 if v2 != "" else None
 
-# --- Account / runtime ---
-WALLET_START_USD   = float(env("WALLET_START_USD", float, 10000))
-UNIVERSE           = [s.strip().upper() for s in env("UNIVERSE", str, "BTC,ETH,SOL").split(",")]
-BASE_CCY           = env("BASE_CCY", str, "USDT")
-POLL_SECONDS       = int(env("POLL_SECONDS", int, 60))
-HISTORY_MINUTES    = int(env("HISTORY_MINUTES", int, 600))
-USE_COINGECKO      = env("USE_COINGECKO", str, "true").lower() == "true"
+def _b(name: str, default: str="0") -> bool:
+    v = _get(name)
+    if v is None:
+        v = default
+    v = str(v).strip().lower()
+    return v in ("1","true","yes","on")
 
-# --- Risk + costs ---
-RISK_PCT_PER_TRADE = float(env("RISK_PCT_PER_TRADE", float, 0.02))
-FEE_PCT            = float(env("FEE_PCT", float, 0.0006))      # 0.06% each side
-SLIPPAGE_PCT       = float(env("SLIPPAGE_PCT", float, 0.0008)) # 0.08% each side
-MAX_OPEN_POSITIONS = int(env("MAX_OPEN_POSITIONS", int, 3))
+def _f(name: str, default: float) -> float:
+    v = _get(name)
+    try:
+        return float(v) if v is not None else float(default)
+    except:
+        return float(default)
 
-# Caps to keep orders realistic
-MAX_TRADE_COST_PCT     = float(env("MAX_TRADE_COST_PCT", float, 0.50))  # ≤50% equity per trade
-MAX_GROSS_EXPOSURE_PCT = float(env("MAX_GROSS_EXPOSURE_PCT", float, 1.00))  # ≤100% equity total
-MIN_TRADE_NOTIONAL     = float(env("MIN_TRADE_NOTIONAL", float, 10.0))   # e.g., $10 min order
-MIN_TRADE_NOTIONAL_PCT = float(env("MIN_TRADE_NOTIONAL_PCT", float, 0.002))  # e.g., 0.2% of equity
-MIN_BREAKEVEN_EDGE_PCT = float(env("MIN_BREAKEVEN_EDGE_PCT", float, 0.0000)) # extra edge beyond pure breakeven
+def _i(name: str, default: int) -> int:
+    v = _get(name)
+    try:
+        return int(float(v)) if v is not None else int(default)
+    except:
+        return int(default)
 
-# --- Strategy (PicklrMVP defaults) ---
-DET_EMA_SHORT      = int(env("DET_EMA_SHORT", int, 12))
-DET_EMA_LONG       = int(env("DET_EMA_LONG", int, 26))
+def _s(name: str, default: str) -> str:
+    v = _get(name)
+    return v if v is not None else default
 
-# PicklrMVP: “holding_days”
-HOLDING_DAYS       = int(env("HOLDING_DAYS", int, 4))
-MAX_HOLD_MINUTES   = HOLDING_DAYS * 1440  # used by time-based exit
+def _flist(name: str, default: str) -> List[float]:
+    raw = _get(name)
+    if raw is None:
+        raw = default
+    if not raw:
+        return []
+    out: List[float] = []
+    for x in str(raw).split(","):
+        x = x.strip()
+        if not x:
+            continue
+        try:
+            out.append(float(x))
+        except:
+            pass
+    return out
 
-# PicklrMVP: “min_volume_usd”
-MIN_VOLUME_USD     = float(env("MIN_VOLUME_USD", float, 1_000_000))
-
-# PicklrMVP: “target_pct” and “stop_pct”
-TARGET_PCT         = float(env("TARGET_PCT", float, 0.095))  # 9.5%
-STOP_PCT           = float(env("STOP_PCT",   float, 0.02))   # 2.0%
-
-MIN_BREAKOUT_PCT   = float(env("MIN_BREAKOUT_PCT", float, 0.0035))  # 0.35%, not 3.5%
-MIN_EMA_SPREAD     = float(env("MIN_EMA_SPREAD", float, 0.005))     # 0.5% default
-
-# Other chooser knobs
-BREAKOUT_LOOKBACK  = int(env("BREAKOUT_LOOKBACK", int, 20))
-CHOOSER_THRESHOLD  = float(env("CHOOSER_THRESHOLD", float, 0.60))  # score cutoff
-
-# Debug toggle (OFF by default)
-ENABLE_DEBUG_SIGNALS = env("ENABLE_DEBUG_SIGNALS", str, "false").lower() == "true"
-
-# Optional integrations
-TELEGRAM_BOT_TOKEN = env("TELEGRAM_BOT_TOKEN", str, "")
-TELEGRAM_CHAT_ID   = env("TELEGRAM_CHAT_ID", str, "")
-
-# --- NEW: Exit Enhancements ---
-# Partial take-profits: sell portions at these gains from entry (fractions)
-# Example: 0.05 = +5%, 0.10 = +10%
-PTP_LEVELS = [float(x) for x in env("PTP_LEVELS", str, "0.05,0.10").split(",")]  # % gains
-PTP_SIZES  = [float(x) for x in env("PTP_SIZES",  str, "0.30,0.30").split(",")]  # fractions of original qty
-
-# Break-even move: when to move stop to entry (either absolute trigger or after TP1)
-BE_TRIGGER_PCT     = float(env("BE_TRIGGER_PCT", float, 0.03))  # e.g., +3% open profit
-BE_AFTER_FIRST_TP   = env("BE_AFTER_FIRST_TP", str, "true").lower() == "true"  # also move at TP1
-
-# Trailing stop: start trailing after first TP; trail by this percent from highest price since activation
-TSL_ACTIVATE_AFTER_TP = env("TSL_ACTIVATE_AFTER_TP", str, "true").lower() == "true"
-TSL_ACTIVATE_PCT  = float(env("TSL_ACTIVATE_PCT", float, 0.05))  # if not after TP, activate after +5%
-TSL_PCT           = float(env("TSL_PCT", float, 0.06))           # 3% trail from high
-
-# --- Live data controls ---
-COINGECKO_API_KEY = env("COINGECKO_API_KEY", str, "")  # add your key in Replit Secrets
-DATA_FETCH_INTERVAL_SECONDS = int(env("DATA_FETCH_INTERVAL_SECONDS", int, 60))  # 1 fetch/min/symbol
-
-# Dynamic universe knobs
-UNIVERSE_TOP_N = int(env("UNIVERSE_TOP_N", int, 150))          # raise cap
-UNIVERSE_CACHE_MINUTES = int(env("UNIVERSE_CACHE_MINUTES", int, 60))
-UNIVERSE_EXCLUDE = [s.strip().upper() for s in env("UNIVERSE_EXCLUDE", str, "").split(",") if s.strip()]
-UNIVERSE_INCLUDE = [s.strip().upper() for s in env("UNIVERSE_INCLUDE", str, "").split(",") if s.strip()]
-
-# Allow quotes: include USDT to dramatically expand candidates on Kraken
-ALLOWED_QUOTES = [s.strip().upper() for s in env("ALLOWED_QUOTES", str, "USD,USDT").split(",")]
-
-# Lower the 24h USD-volume threshold (Kraken’s USD markets are thinner than Binance’s)
-MIN_VOLUME_USD = float(env("MIN_VOLUME_USD", float, 1_000_000))
-
-# Trade selection knobs
-MAX_NEW_POSITIONS_PER_CYCLE = int(env("MAX_NEW_POSITIONS_PER_CYCLE", int, 2))
-SIGNAL_MIN_NOTIONAL_USD = float(env("SIGNAL_MIN_NOTIONAL_USD", float, 10.0))
-
-# How often to rebuild the symbol list from Kraken
-UNIVERSE_REFRESH_MINUTES = int(env("UNIVERSE_REFRESH_MINUTES", int, 15))
-
-# Signal gates / chooser (env-backed)
-REQUIRE_BREAKOUT = env("REQUIRE_BREAKOUT", str, "true").lower() == "true"
-COOLDOWN_MINUTES = int(env("COOLDOWN_MINUTES", int, 60))
-MAX_NEW_POSITIONS_PER_CYCLE = int(env("MAX_NEW_POSITIONS_PER_CYCLE", int, 2))
-SIGNAL_MIN_NOTIONAL_USD = float(env("SIGNAL_MIN_NOTIONAL_USD", float, 10.0))
-
-# Quality filters (env-backed)
-MAX_EXTENSION_PCT   = float(env("MAX_EXTENSION_PCT", float, 0.08))
-MIN_RR              = float(env("MIN_RR", float, 1.5))
-EMA_SLOPE_LOOKBACK  = int(env("EMA_SLOPE_LOOKBACK", int, 5))
-
-# Debug
-ENABLE_DEBUG_SIGNALS = env("ENABLE_DEBUG_SIGNALS", str, "false").lower() == "true"
-
-# Trend fallback (allows entries on strong uptrends without a strict breakout)
-ALLOW_TREND_ENTRY = env("ALLOW_TREND_ENTRY", str, "true").lower() == "true"
-EMA_SLOPE_MIN = float(env("EMA_SLOPE_MIN", float, 0.0))  # require slope >= 0 by default
-
-# ====== MODEL / FEATURES / ATR SETTINGS (add at end) ======
-
-# Model toggle and path
-USE_MODEL        = env("USE_MODEL", str, "true").lower() == "true"
-MODEL_PATH       = env("MODEL_PATH", str, "models/xgb_target_first.json")
-SCORE_THRESHOLD  = float(env("SCORE_THRESHOLD", float, 0.10))
-
-# How far in the future we label wins (hours), and how many past days to build rows
-HORIZON_HOURS    = int(env("HORIZON_HOURS", int, 168))  # up to 7 days
-FEATURE_DAYS     = int(env("FEATURE_DAYS", int, 90))
-
-# ATR length for volatility-based logic
-ATR_LEN          = int(env("ATR_LEN", int, 14))
-
-# ATR-based stops/targets (Option D)
-USE_ATR_STOPS    = env("USE_ATR_STOPS", str, "true").lower() == "true"
-ATR_STOP_MULT    = float(env("ATR_STOP_MULT", float, 1.8))
-ATR_TARGET_MULT  = float(env("ATR_TARGET_MULT", float, 4.5))
-
-# Trailing with ATR (Option A). We keep your existing % trail too.
-TSL_USE_ATR      = env("TSL_USE_ATR", str, "true").lower() == "true"
-TSL_ATR_MULT     = float(env("TSL_ATR_MULT", float, 3.0))
-# When price reaches the old target, tighten the trail (e.g., 70% of original trail)
-TSL_TIGHTEN_MULT = float(env("TSL_TIGHTEN_MULT", float, 0.7))
-
-# Risk scaling by model score (Option B). 1.0 = no scale. Cap keeps it safe.
-RISK_MAX_MULTIPLIER = float(env("RISK_MAX_MULTIPLIER", float, 1.8))
-
-BROKER = env("BROKER", str, "sim")
-
-KRAKEN_API_KEY    = env("KRAKEN_API_KEY", str, "")
-KRAKEN_API_SECRET = env("KRAKEN_API_SECRET", str, "")
-
-LIVE_MAX_ORDER_USD = float(env("LIVE_MAX_ORDER_USD", float, 50.0))
-LIVE_MIN_ORDER_USD = float(env("LIVE_MIN_ORDER_USD", float, 5.0))
+def _slist(name: str, default: str) -> List[str]:
+    raw = _get(name)
+    if raw is None:
+        raw = default
+    if not raw:
+        return []
+    return [x.strip() for x in str(raw).split(",") if x.strip()]
 
 
+# =============================
+# CORE KNOBS (edit via .env)
+# =============================
+
+# Cadence / universe
+POLL_SECONDS                = _i("POLL_SECONDS", 60)      # main loop tick
+OPEN_POS_UPDATE_SECONDS     = _i("OPEN_POS_UPDATE_SECONDS", 60)
+FULL_CANDLES_UPDATE_SECONDS = _i("FULL_CANDLES_UPDATE_SECONDS", 300)
+
+UNIVERSE_REFRESH_MINUTES    = _i("UNIVERSE_REFRESH_MINUTES", 10)
+UNIVERSE_CACHE_MINUTES      = _i("UNIVERSE_CACHE_MINUTES", 60)
+UNIVERSE_TOP_N              = _i("UNIVERSE_TOP_N", 150)
+ALLOWED_QUOTES              = _slist("ALLOWED_QUOTES", "USD,USDT")
+MIN_VOLUME_USD              = _f("MIN_VOLUME_USD", 10_000_000.0)
+UNIVERSE_EXCLUDE            = _slist("UNIVERSE_EXCLUDE", "")
+UNIVERSE_INCLUDE            = _slist("UNIVERSE_INCLUDE", "")
+DEFAULT_UNIVERSE            = _slist("DEFAULT_UNIVERSE", "BTC/USD,ETH/USD,SOL/USD,ADA/USD,LINK/USD")
+
+MAX_OPEN_POSITIONS          = _i("MAX_OPEN_POSITIONS", 3)
+MAX_NEW_POSITIONS_PER_CYCLE = _i("MAX_NEW_POSITIONS_PER_CYCLE", 2)
+
+# Backfill / history windows
+BACKFILL_DAYS               = _i("BACKFILL_DAYS", 365)
+HISTORY_DAYS                = _i("HISTORY_DAYS", BACKFILL_DAYS)
+HISTORY_MINUTES             = _i("HISTORY_MINUTES", 600)
+DATA_FETCH_INTERVAL_SECONDS = _i("DATA_FETCH_INTERVAL_SECONDS", POLL_SECONDS)
+
+# >>> New: knobs used by data.py hourly backfill <<<
+BACKFILL_CONCURRENCY        = _i("BACKFILL_CONCURRENCY", 8)     # number of concurrent pairs
+BACKFILL_PAUSE_MS           = _i("BACKFILL_PAUSE_MS", 200)      # polite pacing between pages
+BACKFILL_MAX_PAIRS          = _i("BACKFILL_MAX_PAIRS", 0)       # 0 = no cap
+
+# Fees / wallet / sizing / limits
+FEE_PCT                    = _f("FEE_PCT", 0.004)     # exchange fee (one side)
+SLIPPAGE_PCT               = _f("SLIPPAGE_PCT", 0.0008)
+RISK_PCT_PER_TRADE         = _f("RISK_PCT_PER_TRADE", 0.02)
+RISK_MAX_MULTIPLIER = _f("RISK_MAX_MULTIPLIER", 2.0)
+POSITION_DUST_USD          = _f("POSITION_DUST_USD", 1.00)
+
+WALLET_START_USD           = _f("WALLET_START_USD", 1000.0)
+
+MAX_TRADE_COST_PCT         = _f("MAX_TRADE_COST_PCT", 0.15)
+MAX_GROSS_EXPOSURE_PCT     = _f("MAX_GROSS_EXPOSURE_PCT", 1.00)
+
+MIN_TRADE_NOTIONAL         = _f("MIN_TRADE_NOTIONAL", 15.0)
+MIN_TRADE_NOTIONAL_PCT     = _f("MIN_TRADE_NOTIONAL_PCT", 0.0)
+MIN_BREAKEVEN_EDGE_PCT     = _f("MIN_BREAKEVEN_EDGE_PCT", 0.0)
+
+MIN_TRADE_NOTIONAL_USD     = _f("MIN_TRADE_NOTIONAL_USD", MIN_TRADE_NOTIONAL)
+MIN_SELL_NOTIONAL_USD      = _f("MIN_SELL_NOTIONAL_USD", MIN_TRADE_NOTIONAL_USD)
+
+
+
+# Defaults if ATR-based entry stops are unavailable
+TARGET_PCT                 = _f("TARGET_PCT", 0.045)
+STOP_PCT                   = _f("STOP_PCT", 0.025)
+
+# Signals / chooser / model
+DET_EMA_SHORT        = _i("DET_EMA_SHORT", 12)
+DET_EMA_LONG         = _i("DET_EMA_LONG", 26)
+EMA_SLOPE_MIN        = _f("EMA_SLOPE_MIN", 0.0)
+MIN_EMA_SPREAD       = _f("MIN_EMA_SPREAD", 0.0005)
+REQUIRE_BREAKOUT     = _b("REQUIRE_BREAKOUT", "0")
+MIN_BREAKOUT_PCT     = _f("MIN_BREAKOUT_PCT", 0.002)
+BREAKOUT_LOOKBACK    = _i("BREAKOUT_LOOKBACK", 50)
+EMA_SLOPE_LOOKBACK   = _i("EMA_SLOPE_LOOKBACK", 8)
+
+CHOOSER_THRESHOLD    = _f("CHOOSER_THRESHOLD", 0.25)
+SCORE_THRESHOLD      = _f("SCORE_THRESHOLD", 0.15)
+
+USE_MODEL            = _b("USE_MODEL", "1")
+MODEL_PATH           = _s("MODEL_PATH", "")
+
+HORIZON_HOURS        = _i("HORIZON_HOURS", 96)
+FEATURE_DAYS         = _i("FEATURE_DAYS", 90)
+ENABLE_DEBUG_SIGNALS = _b("ENABLE_DEBUG_SIGNALS", "0")
+
+# Risk / ATR / stops
+USE_ATR_STOPS   = _b("USE_ATR_STOPS", "1")
+ATR_LEN         = _i("ATR_LEN", 14)
+ATR_STOP_MULT   = _f("ATR_STOP_MULT", 1.8)
+ATR_TARGET_MULT = _f("ATR_TARGET_MULT", 4.5)
+MIN_STOP_PCT    = _f("MIN_STOP_PCT", 0.025)
+MIN_RR          = _f("MIN_RR", 1.8)
+
+# Profit protection (PTP + BE)
+PTP_LEVELS         = _flist("PTP_LEVELS", "0.037,0.08")
+PTP_SIZES          = _flist("PTP_SIZES",  "0.30,0.30")
+
+# BE controls (clarified in Q&A)
+BE_TRIGGER_PCT     = _f("BE_TRIGGER_PCT", 0.0)           # optional % gain trigger
+BE_AFTER_FIRST_TP  = _b("BE_AFTER_FIRST_TP", "1")        # set BE after TP1
+
+# Convenience: TP1_BE_ENABLE maps to BE_AFTER_FIRST_TP
+TP1_BE_ENABLE      = _b("TP1_BE_ENABLE", "1")
+TP1_BE_OFFSET_PCT  = _f("TP1_BE_OFFSET_PCT", 0.0)
+if TP1_BE_ENABLE:
+    BE_AFTER_FIRST_TP = True
+
+# Trailing stop logic (.env knobbed)
+TSL_MODE               = _s("TSL_MODE", "")              # "", "fixed", or "atr"
+if "TSL_USE_ATR" in os.environ:
+    TSL_USE_ATR = _b("TSL_USE_ATR", os.environ.get("TSL_USE_ATR", "0"))
+else:
+    TSL_USE_ATR = (TSL_MODE.strip().lower() == "atr")
+TSL_PCT               = _f("TSL_PCT", 0.04)
+TSL_ATR_MULT          = _f("TSL_ATR_MULT", 3.0)
+TSL_TIGHTEN_MULT      = _f("TSL_TIGHTEN_MULT", 0.7)
+TSL_ACTIVATE_AFTER_TP = _b("TSL_ACTIVATE_AFTER_TP", "0")
+TSL_ACTIVATE_PCT      = _f("TSL_ACTIVATE_PCT", 9.99)     # dormant unless used
+TSL_ACTIVATE_GAIN_PCT = _f("TSL_ACTIVATE_GAIN_PCT", 0.10)
+
+# Live exchange min/max order guidance (used for partial TP upsizing)
+LIVE_MIN_ORDER_USD    = _f("LIVE_MIN_ORDER_USD", 15.0)
+LIVE_MAX_ORDER_USD    = _f("LIVE_MAX_ORDER_USD", 40.0)
+
+# Data ingestion / APIs (Coingecko / Kraken)
+USE_COINGECKO                  = _b("USE_COINGECKO", "0")
+COINGECKO_API_KEY              = _s("COINGECKO_API_KEY", "")
+COINGECKO_BASE_URL             = _s("COINGECKO_BASE_URL", "https://pro-api.coingecko.com/api/v3")
+COINGECKO_VS_CURRENCY          = _s("COINGECKO_VS_CURRENCY", "usd")
+COINGECKO_SLEEP_SECONDS        = _f("COINGECKO_SLEEP_SECONDS", 1.2)
+COINGECKO_MAX_IDS_PER_CALL     = _i("COINGECKO_MAX_IDS_PER_CALL", 100)
+COINGECKO_TIMEOUT_SECONDS      = _f("COINGECKO_TIMEOUT_SECONDS", 30.0)
+COINGECKO_RATE_LIMIT_PER_SEC   = _f("COINGECKO_RATE_LIMIT_PER_SEC", 5.0)
+
+USE_KRAKEN                     = _b("USE_KRAKEN", "1")
+KRAKEN_API_KEY                 = _s("KRAKEN_API_KEY", "")
+KRAKEN_API_SECRET              = _s("KRAKEN_API_SECRET", "")
+KRAKEN_SANDBOX                 = _b("KRAKEN_SANDBOX", "0")
+KRAKEN_TIMEFRAME               = _s("KRAKEN_TIMEFRAME", "1m")
+KRAKEN_MAX_SYMBOLS_PER_CALL    = _i("KRAKEN_MAX_SYMBOLS_PER_CALL", 20)
+KRAKEN_SLEEP_SECONDS           = _f("KRAKEN_SLEEP_SECONDS", 1.0)
+KRAKEN_RATE_LIMIT_PER_SEC      = _f("KRAKEN_RATE_LIMIT_PER_SEC", 5.0)
+USE_SPOT_ONLY                  = _b("USE_SPOT_ONLY", "1")
+BROKER                = _s("BROKER", "kraken-live")
+
+# Kraken private-endpoint hygiene
+KRAKEN_PRIVATE_TTL_SECONDS   = _i("KRAKEN_PRIVATE_TTL_SECONDS", 20)  # serve cache for this long
+KRAKEN_ERROR_BACKOFF_SECONDS = _i("KRAKEN_ERROR_BACKOFF_SECONDS", 5) # wait after an error
+
+
+# Misc
+COOLDOWN_MINUTES   = _i("COOLDOWN_MINUTES", 30)
+MAX_HOLD_MINUTES   = _i("MAX_HOLD_MINUTES", 0)
+VERBOSE_TP_LOGS    = _b("VERBOSE_TP_LOGS", "0")
+VERBOSE_HTTP_LOGS  = _b("VERBOSE_HTTP_LOGS", "0")
+
+# =============================
+# LEGACY-COMPAT ALIASES
+# =============================
+
+# Universe aliases
+UNIVERSE                 = DEFAULT_UNIVERSE
+UNIVERSE_WHITELIST       = UNIVERSE_INCLUDE
+UNIVERSE_BLACKLIST       = UNIVERSE_EXCLUDE
+
+# Backfill / history aliases frequently used by data.py variants
+BACKFILL_DAYS_DEFAULT    = BACKFILL_DAYS
+BACKFILL_HOURS           = _i("BACKFILL_HOURS", BACKFILL_DAYS * 24)
+BACKFILL_MINUTES         = _i("BACKFILL_MINUTES", BACKFILL_HOURS * 60)
+HISTORY_MINUTES_DEFAULT  = HISTORY_MINUTES
+HISTORY_WINDOW_MINUTES   = HISTORY_MINUTES
+FETCH_LOOKBACK_MIN       = _i("FETCH_LOOKBACK_MIN", HISTORY_MINUTES)
+
+# Coingecko aliases
+USE_CG                   = USE_COINGECKO
+CG_API_KEY               = COINGECKO_API_KEY
+CG_BASE_URL              = COINGECKO_BASE_URL
+CG_VS_CURRENCY           = COINGECKO_VS_CURRENCY
+CG_RATE_LIMIT_PER_SEC    = COINGECKO_RATE_LIMIT_PER_SEC
+CG_TIMEOUT_SECONDS       = COINGECKO_TIMEOUT_SECONDS
+
+# Kraken aliases
+KRAKEN_PUBLIC_KEY        = KRAKEN_API_KEY
+KRAKEN_PRIVATE_KEY       = KRAKEN_API_SECRET
+KRAKEN_PAPER             = KRAKEN_SANDBOX
+PAPER_TRADING            = KRAKEN_SANDBOX
+PAPER                    = KRAKEN_SANDBOX
+EXCHANGE_TIMEFRAME       = KRAKEN_TIMEFRAME
+
+# Cadence aliases
+TICK_SECONDS             = POLL_SECONDS
+CANDLES_UPDATE_SECONDS   = FULL_CANDLES_UPDATE_SECONDS
+
+# Sizing / limits aliases
+TRADE_FEE_PCT            = FEE_PCT
+SLIP_PCT                 = SLIPPAGE_PCT
+RISK_PER_TRADE_PCT       = RISK_PCT_PER_TRADE
+MIN_NOTIONAL_USD         = MIN_TRADE_NOTIONAL
+
+# Profit-protection / trailing aliases
+TP1_LEVEL_PCT            = PTP_LEVELS[0] if len(PTP_LEVELS) > 0 else 0.037
+TP2_LEVEL_PCT            = PTP_LEVELS[1] if len(PTP_LEVELS) > 1 else 0.08
+TP1_SIZE_PCT             = PTP_SIZES[0] if len(PTP_SIZES) > 0 else 0.30
+TP2_SIZE_PCT             = PTP_SIZES[1] if len(PTP_SIZES) > 1 else 0.30
+
+TSL_FIXED_PCT            = TSL_PCT
+TSL_ATR_MULTIPLIER       = TSL_ATR_MULT
+TSL_TIGHTEN_FACTOR       = TSL_TIGHTEN_MULT
+TSL_ENABLE_AFTER_TP      = TSL_ACTIVATE_AFTER_TP
+TSL_ENABLE_AT_GAIN_PCT   = TSL_ACTIVATE_GAIN_PCT
+
+# Default stop/target aliases
+DEFAULT_TARGET_PCT       = TARGET_PCT
+DEFAULT_STOP_PCT         = STOP_PCT
+
+# Wallet alias
+STARTING_BALANCE_USD     = WALLET_START_USD
+
+# --- Kraken private-call guardrails ---
+KRAKEN_PRIVATE_MIN_INTERVAL_MS = _i("KRAKEN_PRIVATE_MIN_INTERVAL_MS", 1200)  # >= 1100ms
+KRAKEN_PRIVATE_BACKOFF_MS_BASE = _i("KRAKEN_PRIVATE_BACKOFF_MS_BASE", 500)   # first backoff
+KRAKEN_PRIVATE_BACKOFF_MS_MAX  = _i("KRAKEN_PRIVATE_BACKOFF_MS_MAX", 4000)  # cap
+KRAKEN_PRIVATE_CACHE_TTL_SEC   = _i("KRAKEN_PRIVATE_CACHE_TTL_SEC", 30)     # balance cache
